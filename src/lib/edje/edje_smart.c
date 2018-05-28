@@ -48,12 +48,25 @@ _efl_canvas_layout_efl_object_constructor(Eo *obj, Edje *ed)
    return obj;
 }
 
+
 EOLIAN static void
 _efl_canvas_layout_efl_object_invalidate(Eo *obj, Edje *ed)
 {
    _edje_file_callbacks_del(ed, NULL);
 
    efl_invalidate(efl_super(obj, MY_CLASS));
+
+   //invalidate is done, this means the legacy evas deletion event is called.
+   for (int i = 0; i < ed->table_parts_size; ++i)
+     {
+        Edje_Real_Part *rp = ed->table_parts[i];
+        switch(rp->type)
+          {
+            case EDJE_RP_TYPE_SWALLOW:
+              _edje_real_part_swallow_clear(ed, rp);
+            break;
+          }
+     }
 }
 
 EOLIAN static void
