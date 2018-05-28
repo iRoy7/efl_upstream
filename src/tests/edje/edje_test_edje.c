@@ -386,12 +386,12 @@ EFL_START_TEST(edje_test_swallows_lifetime)
    Evas *evas = EDJE_TEST_INIT_EVAS();
    Evas_Object *ly, *o1;
 
-   ly = efl_add(EFL_CANVAS_LAYOUT_CLASS, evas);
+   ly = edje_object_add(evas);
    fail_unless(edje_object_file_set(ly, test_layout_get("test_swallows.edj"), "test_group"));
 
    fail_unless(edje_object_part_exists(ly, "swallow"));
 
-   o1 = efl_add(EFL_CANVAS_LAYOUT_CLASS, ly);
+   o1 = edje_object_add(ly);
    fail_if(!edje_object_part_swallow(ly, "swallow", o1));
 
    evas_object_del(ly);
