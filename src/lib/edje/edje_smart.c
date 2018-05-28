@@ -65,6 +65,13 @@ _efl_canvas_layout_efl_object_invalidate(Eo *obj, Edje *ed)
             case EDJE_RP_TYPE_SWALLOW:
               _edje_real_part_swallow_clear(ed, rp);
             break;
+
+            case EDJE_RP_TYPE_CONTAINER:
+              if (rp->part->type == EDJE_PART_TYPE_BOX)
+                _edje_real_part_box_remove_all(ed, rp, 0);
+              else if (rp->part->type == EDJE_PART_TYPE_TABLE)
+                _edje_real_part_table_clear(ed, rp, 0);
+            break;
           }
      }
 }
