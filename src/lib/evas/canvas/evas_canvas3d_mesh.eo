@@ -1,6 +1,6 @@
 import evas_canvas3d_types;
 
-struct @extern Eina.Inarray; [[Eina inarray data structure]]
+/* struct @extern Eina.Inarray; [[Eina inarray data structure]] */
 
 class Evas.Canvas3D.Mesh (Evas.Canvas3D.Object, Efl.File)
 {
