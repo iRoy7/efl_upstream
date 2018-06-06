@@ -28,7 +28,11 @@
 #include "eina_log.h"
 #include "eina_mempool.h"
 #include "eina_lock.h"
+#if USE_CORO_THREAD
 #include "eina_thread.h"
+#elif USE_CORO_UCONTEXT
+#include "ucontext.h"
+#endif
 #include "eina_inarray.h"
 #include "eina_promise.h"
 
@@ -79,8 +83,13 @@ struct _Eina_Coro {
    Eina_Future *awaiting;
    Eina_Lock lock;
    Eina_Condition condition;
+#if USE_CORO_THREAD
    Eina_Thread main;
    Eina_Thread coroutine;
+#elif USE_CORO_UCONTEXT
+   ucontext_t *main;
+   ucontext_t *coroutine;
+#endif
    Eina_Bool finished;
    Eina_Bool canceled;
    Eina_Coro_Turn turn;
@@ -89,7 +98,13 @@ struct _Eina_Coro {
 #define CORO_TURN_STR(turn) \
   (((turn) == EINA_CORO_TURN_MAIN) ? "MAIN" : "COROUTINE")
 
+#if USE_CORO_THREAD
 #define CORO_FMT "coro=%p {func=%p data=%p turn=%s threads={%p%c %p%c} awaiting=%p}"
+#elif USE_CORO_UCONTEXT
+#define CORO_FMT "coro=%p {func=%p data=%p turn=%s contexts={%p%c %p%c} awaiting=%p}"
+#endif
+
+#if USE_CORO_THREAD
 #define CORO_EXP(coro) \
   coro, coro->func, coro->data, \
     CORO_TURN_STR(coro->turn), \
@@ -98,6 +113,25 @@ struct _Eina_Coro {
     (void *)coro->main, \
     eina_thread_self() == coro->main ? '*' : 0, \
     coro->awaiting
+#elif USE_CORO_UCONTEXT
+// FIXME Can we find which ucontext_t are we in?
+#define CORO_EXP(coro) \
+  coro, coro->func, coro->data, \
+    CORO_TURN_STR(coro->turn), \
+    (void *)coro->coroutine, \
+    '*', \
+    (void *)coro->main, \
+    '*', \
+    coro->awaiting
+#endif
+
+#if USE_CORO_THREAD
+#define IS_CORO(coro) ((coro)->coroutine == eina_thread_self())
+#define IS_MAIN(coro) ((coro)->main == eina_thread_self())
+#elif USE_CORO_UCONTEXT
+#define IS_CORO(coro) (1)
+#define IS_MAIN(coro) (1)
+#endif
 
 #define EINA_CORO_CHECK(coro, turn, ...)        \
   do \
@@ -107,12 +141,12 @@ struct _Eina_Coro {
             CRIT(#coro "=%p is invalid.", (coro)); \
             return __VA_ARGS__; \
          } \
-       else if ((turn == EINA_CORO_TURN_COROUTINE) && ((coro)->coroutine != eina_thread_self())) \
+       else if ((turn == EINA_CORO_TURN_COROUTINE) && !IS_CORO((coro))) \
          { \
             CRIT("must be called from coroutine! " CORO_FMT, CORO_EXP((coro))); \
             return __VA_ARGS__; \
          } \
-       else if ((turn == EINA_CORO_TURN_MAIN) && ((coro)->main != eina_thread_self())) \
+       else if ((turn == EINA_CORO_TURN_MAIN) && !IS_MAIN((coro))) \
          { \
             CRIT("must be called from main thread! " CORO_FMT, CORO_EXP((coro))); \
             return __VA_ARGS__; \
@@ -128,12 +162,12 @@ struct _Eina_Coro {
             CRIT(#coro "=%p is invalid.", (coro)); \
             goto label; \
          } \
-       else if ((turn == EINA_CORO_TURN_COROUTINE) && ((coro)->coroutine != eina_thread_self())) \
+       else if ((turn == EINA_CORO_TURN_COROUTINE) && !IS_CORO((coro))) \
          { \
             CRIT("must be called from coroutine! " CORO_FMT, CORO_EXP((coro))); \
             goto label; \
          } \
-       else if ((turn == EINA_CORO_TURN_MAIN) && ((coro)->main != eina_thread_self())) \
+       else if ((turn == EINA_CORO_TURN_MAIN) && !IS_MAIN((coro))) \
          { \
             CRIT("must be called from main thread! " CORO_FMT, CORO_EXP((coro))); \
             goto label; \
@@ -301,6 +335,7 @@ _eina_coro_hooks_coro_enter_and_get_canceled(Eina_Coro *coro)
    return coro->canceled;
 }
 
+#if USE_CORO_THREAD
 static void *
 _eina_coro_thread(void *data, Eina_Thread t EINA_UNUSED)
 {
@@ -323,6 +358,7 @@ _eina_coro_thread(void *data, Eina_Thread t EINA_UNUSED)
 
    return result;
 }
+#endif
 
 static Eina_Coro *
 _eina_coro_alloc(void)
@@ -396,8 +432,12 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
    EINA_SAFETY_ON_FALSE_GOTO(r, failed_lock);
    r = eina_condition_new(&coro->condition, &coro->lock);
    EINA_SAFETY_ON_FALSE_GOTO(r, failed_condition);
+#if USE_CORO_THREAD
    coro->main = eina_thread_self();
    coro->coroutine = 0;
+#elif USE_CORO_UCONTEXT
+   // Setup ucontext_t pointers
+#endif
    coro->finished = EINA_FALSE;
    coro->canceled = EINA_FALSE;
    coro->turn = EINA_CORO_TURN_MAIN;
@@ -406,6 +446,7 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
    if (stack_size)
      DBG("currently stack size is ignored! Using thread default.");
 
+#if USE_CORO_THREAD
    if (!eina_thread_create(&coro->coroutine,
                            EINA_THREAD_NORMAL, -1,
                            _eina_coro_thread, coro))
@@ -413,12 +454,16 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
         ERR("could not create thread for " CORO_FMT, CORO_EXP(coro));
         goto failed_thread;
      }
+#elif USE_CORO_UCONTEXT
+#endif
 
    INF(CORO_FMT, CORO_EXP(coro));
    return coro;
 
+#if USE_CORO_THREAD
  failed_thread:
    eina_condition_free(&coro->condition);
+#endif
  failed_condition:
    eina_lock_free(&coro->lock);
  failed_lock:
@@ -463,7 +508,9 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
       void *result;
       DBG("coroutine finished, join thread " CORO_FMT, CORO_EXP(coro));
 
+#if USE_CORO_THREAD
       result = eina_thread_join(coro->coroutine);
+#endif
       INF("coroutine finished with result=%p " CORO_FMT,
           result, CORO_EXP(coro));
       if (p_result) *p_result = result;
