@@ -64,6 +64,7 @@ _eina_test_safety_print_cb(const Eina_Log_Domain *d, Eina_Log_Level level, const
 static const void *
 coro_func_noyield(void *data, Eina_Bool canceled, Eina_Coro *coro EINA_UNUSED)
 {
+    EINA_LOG_DBG("entered");
    struct ctx *ctx = data;
 
    ck_assert_ptr_ne(ctx, NULL);
@@ -73,11 +74,13 @@ coro_func_noyield(void *data, Eina_Bool canceled, Eina_Coro *coro EINA_UNUSED)
 
    ctx->b = VAL_B;
 
+   EINA_LOG_DBG("returning normally");
    return RETVAL;
 }
 
 START_TEST(coro_noyield)
 {
+   EINA_LOG_DBG("coro_noyield started");
    Eina_Coro *coro;
    struct ctx ctx = {
      .a = VAL_A,
@@ -88,9 +91,11 @@ START_TEST(coro_noyield)
 
    eina_init();
 
+   EINA_LOG_DBG("Creating coro");
    coro = eina_coro_new(coro_func_noyield, &ctx, EINA_CORO_STACK_SIZE_DEFAULT);
    ck_assert_ptr_ne(coro, NULL);
 
+   EINA_LOG_DBG("Looping");
    while (eina_coro_run(&coro, &result, NULL))
      {
         i++;
@@ -102,6 +107,7 @@ START_TEST(coro_noyield)
    ck_assert_ptr_eq(result, RETVAL);
 
    eina_shutdown();
+   EINA_LOG_DBG("coro_noyield finished");
 }
 END_TEST
 

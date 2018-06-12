@@ -82,13 +82,14 @@ struct _Eina_Coro {
    const void *data;
    Eina_Future *awaiting;
    Eina_Lock lock;
-   Eina_Condition condition;
 #if USE_CORO_THREAD
+   Eina_Condition condition;
    Eina_Thread main;
    Eina_Thread coroutine;
 #elif USE_CORO_UCONTEXT
-   ucontext_t *main;
-   ucontext_t *coroutine;
+   ucontext_t main;
+   ucontext_t coroutine;
+   void *result;
 #endif
    Eina_Bool finished;
    Eina_Bool canceled;
@@ -118,9 +119,9 @@ struct _Eina_Coro {
 #define CORO_EXP(coro) \
   coro, coro->func, coro->data, \
     CORO_TURN_STR(coro->turn), \
-    (void *)coro->coroutine, \
+    &coro->coroutine, \
     '*', \
-    (void *)coro->main, \
+    &coro->main, \
     '*', \
     coro->awaiting
 #endif
@@ -129,8 +130,8 @@ struct _Eina_Coro {
 #define IS_CORO(coro) ((coro)->coroutine == eina_thread_self())
 #define IS_MAIN(coro) ((coro)->main == eina_thread_self())
 #elif USE_CORO_UCONTEXT
-#define IS_CORO(coro) (1)
-#define IS_MAIN(coro) (1)
+#define IS_CORO(coro) ((coro)->turn == EINA_CORO_TURN_COROUTINE)
+#define IS_MAIN(coro) ((coro)->turn == EINA_CORO_TURN_MAIN)
 #endif
 
 #define EINA_CORO_CHECK(coro, turn, ...)        \
@@ -302,6 +303,7 @@ _eina_coro_hooks_coro_exit(Eina_Coro *coro)
    eina_lock_release(&_eina_coro_lock);
 }
 
+#if USE_CORO_THREAD
 static void
 _eina_coro_signal(Eina_Coro *coro, Eina_Coro_Turn turn)
 {
@@ -327,6 +329,39 @@ _eina_coro_wait(Eina_Coro *coro, Eina_Coro_Turn turn)
 
    DBG("wait is over: turn=%s " CORO_FMT, CORO_TURN_STR(turn), CORO_EXP(coro));
 }
+#endif
+
+#if USE_CORO_UCONTEXT
+// Switches control to the given context.
+static void
+_eina_coro_switch(Eina_Coro *coro, Eina_Coro_Turn turn)
+{
+   DBG("switching " CORO_FMT " to turn %u", CORO_EXP(coro), turn);
+   // FIXME implement this beauty
+   ucontext_t *current;
+   ucontext_t *next;
+   if (turn == EINA_CORO_TURN_COROUTINE)
+     {
+        current = &coro->main;
+        next = &coro->coroutine;
+        // make sure we return to the current context upon coro finishing.
+     }
+   else // TURN_MAIN
+     {
+        current = &coro->coroutine;
+        next = &coro->main;
+     }
+   volatile int switched = 0;
+   DBG("Saving current context at %p and turn %u", current, turn);
+   getcontext(current); // Saves the current context to 'current'
+   if (!switched)
+     {
+       switched = 1;
+       coro->turn = turn;
+       setcontext(next); // Jumps to 'next' context
+     }
+}
+#endif
 
 static Eina_Bool
 _eina_coro_hooks_coro_enter_and_get_canceled(Eina_Coro *coro)
@@ -357,6 +392,23 @@ _eina_coro_thread(void *data, Eina_Thread t EINA_UNUSED)
    _eina_coro_signal(coro, EINA_CORO_TURN_MAIN);
 
    return result;
+}
+#elif USE_CORO_UCONTEXT
+static void
+_eina_coro_coro(void *data)
+{
+   Eina_Coro *coro = data;
+   Eina_Bool canceled = EINA_FALSE;
+
+   canceled = _eina_coro_hooks_coro_enter_and_get_canceled(coro);
+
+   coro->result = (void*)coro->func((void *)coro->data, canceled, coro);
+
+   _eina_coro_hooks_coro_exit(coro);
+
+   coro->finished = EINA_TRUE;
+
+   // Control follows automatically to coro->coroutine.uc_link
 }
 #endif
 
@@ -430,21 +482,39 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
    coro->data = data;
    r = eina_lock_new(&coro->lock);
    EINA_SAFETY_ON_FALSE_GOTO(r, failed_lock);
+#if USE_CORO_THREAD
    r = eina_condition_new(&coro->condition, &coro->lock);
    EINA_SAFETY_ON_FALSE_GOTO(r, failed_condition);
-#if USE_CORO_THREAD
    coro->main = eina_thread_self();
    coro->coroutine = 0;
-#elif USE_CORO_UCONTEXT
-   // Setup ucontext_t pointers
-#endif
-   coro->finished = EINA_FALSE;
-   coro->canceled = EINA_FALSE;
-   coro->turn = EINA_CORO_TURN_MAIN;
 
    /* eina_thread_create() doesn't take attributes so we can set stack size */
    if (stack_size)
      DBG("currently stack size is ignored! Using thread default.");
+
+
+
+#elif USE_CORO_UCONTEXT
+   // Setup ucontext_t pointers
+   char *stack = calloc(sizeof(char), stack_size);
+   ucontext_t *return_context = calloc(sizeof(ucontext_t), 1);
+   getcontext(return_context);
+   if (coro->finished)
+     {
+        DBG("Entered return if. Switching back to main");
+        free(return_context);
+        coro->turn = EINA_CORO_TURN_MAIN;
+        setcontext(&coro->main);
+     }
+   getcontext(&coro->coroutine);
+   coro->coroutine.uc_link = return_context;
+   coro->coroutine.uc_stack.ss_sp = stack;
+   coro->coroutine.uc_stack.ss_size = stack_size;
+   makecontext(&coro->coroutine, (void(*)(void)) _eina_coro_coro, 1, coro);
+#endif
+   coro->finished = EINA_FALSE;
+   coro->canceled = EINA_FALSE;
+   coro->turn = EINA_CORO_TURN_MAIN;
 
 #if USE_CORO_THREAD
    if (!eina_thread_create(&coro->coroutine,
@@ -463,9 +533,9 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
 #if USE_CORO_THREAD
  failed_thread:
    eina_condition_free(&coro->condition);
-#endif
  failed_condition:
    eina_lock_free(&coro->lock);
+#endif
  failed_lock:
    _eina_coro_free(coro);
    return NULL;
@@ -478,8 +548,12 @@ eina_coro_yield(Eina_Coro *coro)
 
    _eina_coro_hooks_coro_exit(coro);
 
+#if USE_CORO_THREAD
    _eina_coro_signal(coro, EINA_CORO_TURN_MAIN);
    _eina_coro_wait(coro, EINA_CORO_TURN_COROUTINE);
+#elif USE_CORO_UCONTEXT
+   _eina_coro_switch(coro, EINA_CORO_TURN_MAIN);
+#endif
 
    return !_eina_coro_hooks_coro_enter_and_get_canceled(coro);
 }
@@ -499,8 +573,14 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
 
    _eina_coro_hooks_main_exit(coro);
 
+#if USE_CORO_THREAD
    _eina_coro_signal(coro, EINA_CORO_TURN_COROUTINE);
    _eina_coro_wait(coro, EINA_CORO_TURN_MAIN);
+#elif USE_CORO_UCONTEXT
+   DBG("Will switch to coro");
+   _eina_coro_switch(coro, EINA_CORO_TURN_COROUTINE);
+   DBG("Switched back to main");
+#endif
 
    _eina_coro_hooks_main_enter(coro);
 
@@ -510,12 +590,16 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
 
 #if USE_CORO_THREAD
       result = eina_thread_join(coro->coroutine);
+#elif USE_CORO_UCONTEXT
+      result = coro->result;
 #endif
       INF("coroutine finished with result=%p " CORO_FMT,
           result, CORO_EXP(coro));
       if (p_result) *p_result = result;
       if (coro->awaiting) eina_future_cancel(coro->awaiting);
+#if USE_CORO_THREAD
       eina_condition_free(&coro->condition);
+#endif
       eina_lock_free(&coro->lock);
       _eina_coro_free(coro);
       *p_coro = NULL;
