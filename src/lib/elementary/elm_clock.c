@@ -476,7 +476,7 @@ _time_update(Evas_Object *obj, Eina_Bool theme_update)
              edje_object_size_min_restricted_calc
                (sd->digit[i], &mw, &mh, mw, mh);
              evas_object_size_hint_min_set(sd->digit[i], mw, mh);
-             snprintf(buf, sizeof(buf), "d%i", i);
+             snprintf(buf, sizeof(buf), "elm.d%i", i);
              elm_layout_content_set(obj, buf, sd->digit[i]);
              evas_object_show(sd->digit[i]);
           }
@@ -509,7 +509,7 @@ _time_update(Evas_Object *obj, Eina_Bool theme_update)
              edje_object_size_min_restricted_calc
                (sd->am_pm_obj, &mw, &mh, mw, mh);
              evas_object_size_hint_min_set(sd->am_pm_obj, mw, mh);
-             elm_layout_content_set(obj, "ampm", sd->am_pm_obj);
+             elm_layout_content_set(obj, "elm.ampm", sd->am_pm_obj);
              evas_object_show(sd->am_pm_obj);
           }
 
