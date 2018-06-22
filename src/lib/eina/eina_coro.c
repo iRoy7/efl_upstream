@@ -22,6 +22,9 @@
 
 #include <stdlib.h>
 #include <limits.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/resource.h>
 
 #include "eina_config.h"
 #include "eina_private.h"
@@ -30,8 +33,6 @@
 #include "eina_lock.h"
 #if USE_CORO_THREAD
 #include "eina_thread.h"
-#elif USE_CORO_UCONTEXT
-#include "ucontext.h"
 #endif
 #include "eina_inarray.h"
 #include "eina_promise.h"
@@ -42,6 +43,53 @@
 #include "eina_coro.h"
 #include "eina_value.h"
 #include "eina_value_util.h"
+
+typedef void* fcontext_t;
+
+/**
+ * Structure used to transfer data between contexts.
+ */
+typedef struct {
+    /* The continuation that called this continuation. Usually you jump_context to this continuation
+       in order to make the current continuation 'return' control to it.
+     */
+    fcontext_t ctx;
+    /* Data received from the caller of jump_fcontext. */
+    void *data;
+} transfer_t;
+
+/**
+ * @brief Saves the current context and jumps into another.
+ *
+ * Saves the current continuation and changes into the continuation
+ * pointed by to, passing vp as the data. The current continuation
+ * is passed to the callback associated with to through a transfer_t
+ * instance, either as argument if the new context is starting or
+ * return from a previous jump_fcontext call. This call @b will block
+ * @b until this newly-created continuation is jumped into.
+ *
+ * @param to The continuation to jump into. Must not be #NULL.
+ * @param vp User data to pass to the transfer_t structure.
+ *
+ * @return A context transfer struct with the continuation that called
+ *         jump_fcontext returning to this call.
+ */
+transfer_t ostd_jump_fcontext(
+    fcontext_t const to, void *vp
+);
+
+/**
+ * @brief Initializes a context with the given stack and context function.
+ *
+ *
+ *
+ * @param sp Pointer to the @b base @b of the stack.
+ * @param size The size of the stack for the new continuation.
+// @param fn Callback that will be the starting point of the new continuation.
+ */
+fcontext_t ostd_make_fcontext(
+    void *sp, size_t size, void (*fn)(transfer_t)
+);
 
 static Eina_Mempool *_eina_coro_mp = NULL;
 static Eina_Lock _eina_coro_lock;
@@ -86,9 +134,9 @@ struct _Eina_Coro {
    Eina_Condition condition;
    Eina_Thread main;
    Eina_Thread coroutine;
-#elif USE_CORO_UCONTEXT
-   ucontext_t main;
-   ucontext_t coroutine;
+#elif USE_CORO_FCONTEXT
+   fcontext_t main;
+   fcontext_t coroutine;
    void *result;
 #endif
    Eina_Bool finished;
@@ -99,11 +147,7 @@ struct _Eina_Coro {
 #define CORO_TURN_STR(turn) \
   (((turn) == EINA_CORO_TURN_MAIN) ? "MAIN" : "COROUTINE")
 
-#if USE_CORO_THREAD
 #define CORO_FMT "coro=%p {func=%p data=%p turn=%s threads={%p%c %p%c} awaiting=%p}"
-#elif USE_CORO_UCONTEXT
-#define CORO_FMT "coro=%p {func=%p data=%p turn=%s contexts={%p%c %p%c} awaiting=%p}"
-#endif
 
 #if USE_CORO_THREAD
 #define CORO_EXP(coro) \
@@ -114,8 +158,7 @@ struct _Eina_Coro {
     (void *)coro->main, \
     eina_thread_self() == coro->main ? '*' : 0, \
     coro->awaiting
-#elif USE_CORO_UCONTEXT
-// FIXME Can we find which ucontext_t are we in?
+#elif USE_CORO_FCONTEXT
 #define CORO_EXP(coro) \
   coro, coro->func, coro->data, \
     CORO_TURN_STR(coro->turn), \
@@ -129,7 +172,7 @@ struct _Eina_Coro {
 #if USE_CORO_THREAD
 #define IS_CORO(coro) ((coro)->coroutine == eina_thread_self())
 #define IS_MAIN(coro) ((coro)->main == eina_thread_self())
-#elif USE_CORO_UCONTEXT
+#elif USE_CORO_FCONTEXT
 #define IS_CORO(coro) ((coro)->turn == EINA_CORO_TURN_COROUTINE)
 #define IS_MAIN(coro) ((coro)->turn == EINA_CORO_TURN_MAIN)
 #endif
@@ -331,38 +374,6 @@ _eina_coro_wait(Eina_Coro *coro, Eina_Coro_Turn turn)
 }
 #endif
 
-#if USE_CORO_UCONTEXT
-// Switches control to the given context.
-static void
-_eina_coro_switch(Eina_Coro *coro, Eina_Coro_Turn turn)
-{
-   DBG("switching " CORO_FMT " to turn %u", CORO_EXP(coro), turn);
-   // FIXME implement this beauty
-   ucontext_t *current;
-   ucontext_t *next;
-   if (turn == EINA_CORO_TURN_COROUTINE)
-     {
-        current = &coro->main;
-        next = &coro->coroutine;
-        // make sure we return to the current context upon coro finishing.
-     }
-   else // TURN_MAIN
-     {
-        current = &coro->coroutine;
-        next = &coro->main;
-     }
-   volatile int switched = 0;
-   DBG("Saving current context at %p and turn %u", current, turn);
-   getcontext(current); // Saves the current context to 'current'
-   if (!switched)
-     {
-       switched = 1;
-       coro->turn = turn;
-       setcontext(next); // Jumps to 'next' context
-     }
-}
-#endif
-
 static Eina_Bool
 _eina_coro_hooks_coro_enter_and_get_canceled(Eina_Coro *coro)
 {
@@ -393,14 +404,18 @@ _eina_coro_thread(void *data, Eina_Thread t EINA_UNUSED)
 
    return result;
 }
-#elif USE_CORO_UCONTEXT
+#elif USE_CORO_FCONTEXT
 static void
-_eina_coro_coro(void *data)
+_eina_coro_coro(transfer_t continuation)
 {
-   Eina_Coro *coro = data;
+   Eina_Coro *coro = (Eina_Coro*) continuation.data;
    Eina_Bool canceled = EINA_FALSE;
 
    canceled = _eina_coro_hooks_coro_enter_and_get_canceled(coro);
+
+   // Saves the context that called jump_fcontext and started this call.
+   coro->main = continuation.ctx;
+   coro->turn = EINA_CORO_TURN_COROUTINE;
 
    coro->result = (void*)coro->func((void *)coro->data, canceled, coro);
 
@@ -408,7 +423,9 @@ _eina_coro_coro(void *data)
 
    coro->finished = EINA_TRUE;
 
-   // Control follows automatically to coro->coroutine.uc_link
+   // Jump back to main explicitly.
+   // fcontext by default exits after the context function finishes.
+   ostd_jump_fcontext(coro->main, coro);
 }
 #endif
 
@@ -491,26 +508,20 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
    /* eina_thread_create() doesn't take attributes so we can set stack size */
    if (stack_size)
      DBG("currently stack size is ignored! Using thread default.");
-
-
-
-#elif USE_CORO_UCONTEXT
-   // Setup ucontext_t pointers
-   char *stack = calloc(sizeof(char), stack_size);
-   ucontext_t *return_context = calloc(sizeof(ucontext_t), 1);
-   getcontext(return_context);
-   if (coro->finished)
+#elif USE_CORO_FCONTEXT
+   if (stack_size == 0)
      {
-        DBG("Entered return if. Switching back to main");
-        free(return_context);
-        coro->turn = EINA_CORO_TURN_MAIN;
-        setcontext(&coro->main);
+        struct rlimit limit;
+        getrlimit(RLIMIT_STACK, &limit);
+        stack_size = (size_t)limit.rlim_cur;
+        DBG("Setting stack size to %u\n", stack_size);
      }
-   getcontext(&coro->coroutine);
-   coro->coroutine.uc_link = return_context;
-   coro->coroutine.uc_stack.ss_sp = stack;
-   coro->coroutine.uc_stack.ss_size = stack_size;
-   makecontext(&coro->coroutine, (void(*)(void)) _eina_coro_coro, 1, coro);
+   // Setup ucontext_t pointers
+   void *stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+   stack = (unsigned char *)stack + stack_size;
+   int page_size = getpagesize();
+   mprotect(stack, page_size, PROT_NONE);
+   coro->coroutine = ostd_make_fcontext(stack, stack_size, _eina_coro_coro);
 #endif
    coro->finished = EINA_FALSE;
    coro->canceled = EINA_FALSE;
@@ -524,7 +535,6 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
         ERR("could not create thread for " CORO_FMT, CORO_EXP(coro));
         goto failed_thread;
      }
-#elif USE_CORO_UCONTEXT
 #endif
 
    INF(CORO_FMT, CORO_EXP(coro));
@@ -551,8 +561,13 @@ eina_coro_yield(Eina_Coro *coro)
 #if USE_CORO_THREAD
    _eina_coro_signal(coro, EINA_CORO_TURN_MAIN);
    _eina_coro_wait(coro, EINA_CORO_TURN_COROUTINE);
-#elif USE_CORO_UCONTEXT
-   _eina_coro_switch(coro, EINA_CORO_TURN_MAIN);
+#elif USE_CORO_FCONTEXT
+   DBG("Jumping to switch to main context");
+   transfer_t continuation = ostd_jump_fcontext(coro->main, coro);
+   DBG("Returned to coro context from jump");
+   // Save the point that called jump_fcontext to resume this coroutine.
+   coro->main = continuation.ctx;
+   coro->turn = EINA_CORO_TURN_COROUTINE;
 #endif
 
    return !_eina_coro_hooks_coro_enter_and_get_canceled(coro);
@@ -576,10 +591,13 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
 #if USE_CORO_THREAD
    _eina_coro_signal(coro, EINA_CORO_TURN_COROUTINE);
    _eina_coro_wait(coro, EINA_CORO_TURN_MAIN);
-#elif USE_CORO_UCONTEXT
-   DBG("Will switch to coro");
-   _eina_coro_switch(coro, EINA_CORO_TURN_COROUTINE);
-   DBG("Switched back to main");
+#elif USE_CORO_FCONTEXT
+   DBG("Will jump to coro %p", coro->coroutine);
+   transfer_t continuation = ostd_jump_fcontext(coro->coroutine, coro);
+   // Save the point where we should resume the coroutine.
+   coro->coroutine = continuation.ctx;
+   coro->turn = EINA_CORO_TURN_MAIN;
+   /* DBG("Switched back to main"); */
 #endif
 
    _eina_coro_hooks_main_enter(coro);
@@ -590,7 +608,7 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
 
 #if USE_CORO_THREAD
       result = eina_thread_join(coro->coroutine);
-#elif USE_CORO_UCONTEXT
+#elif USE_CORO_FCONTEXT
       result = coro->result;
 #endif
       INF("coroutine finished with result=%p " CORO_FMT,

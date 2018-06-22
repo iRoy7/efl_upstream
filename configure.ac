@@ -2035,33 +2035,17 @@ EFL_ADD_LIBS([ECORE], [${LTLIBINTL}])
 AC_ARG_WITH([coro],
    [AS_HELP_STRING([--with-coro=@<:@threads/ucontex/fiber@:>@],[select coroutine implementation. @<:default=threads:>@])],
    [want_coro="${withval}"],
-   [want_coro="threads"])
+   [want_coro="fcontext"])
 
 AC_SUBST([want_coro])
 
 case "$want_coro" in
-     ucontext)
+     fcontext)
         if test "x${have_windows}" == "xyes"; then
-          AC_MSG_ERROR([ucontext coroutines are available only in POSIX systems.])
+          AC_MSG_ERROR([fcontext coroutines are available only in POSIX systems.])
         fi
-        AC_COMPILE_IFELSE(
-           [AC_LANG_PROGRAM(
-               [[
-        #include <ucontext.h>
-               ]],
-               [[
-        ucontext_t test;
-        getcontext(&test);
-               ]])],
-           [have_ucontext="yes"],
-           [AC_MSG_ERROR([ucontext check coroutine implementation failed.])])
-
-        AC_MSG_CHECKING([for ucontext])
-        AC_MSG_RESULT([${have_ucontext}])
-        if test "x${have_ucontext}" == "xyes"; then
-          AC_DEFINE(USE_CORO_UCONTEXT, 1, [Define to 1 if you have posix ucontext functions.])
-          EFL_ADD_FEATURE([system], [coroutine], [ucontext])
-        fi
+        AC_DEFINE(USE_CORO_FCONTEXT, 1, [Define to 1 if you have posix fcontext functions.])
+        EFL_ADD_FEATURE([system], [coroutine], [fcontext])
      ;;
      fiber)
         if test "x${have_windows}" != "xyes"; then
@@ -2075,7 +2059,7 @@ case "$want_coro" in
        AC_DEFINE(USE_CORO_THREAD, 1, [Define to 1 if you have thread functions.])
        EFL_ADD_FEATURE([system], [coroutine], [thread])
      ;;
-     *) AC_MSG_ERROR([Invalid coroutine implementation (${want_coro}): must be threads, ucontext (POSIX) or fiber (Windows).])
+     *) AC_MSG_ERROR([Invalid coroutine implementation (${want_coro}): must be threads, fcontext (ASM) or fiber (Windows).])
      ;;
 esac
 
