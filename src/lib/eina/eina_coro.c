@@ -137,6 +137,8 @@ struct _Eina_Coro {
 #elif USE_CORO_FCONTEXT
    fcontext_t main;
    fcontext_t coroutine;
+   unsigned char* stack;
+   size_t stack_size;
    void *result;
 #endif
    Eina_Bool finished;
@@ -514,13 +516,15 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
         struct rlimit limit;
         getrlimit(RLIMIT_STACK, &limit);
         stack_size = (size_t)limit.rlim_cur;
-        DBG("Setting stack size to %u\n", stack_size);
+        DBG("Setting stack size to %lu\n", stack_size);
      }
    // Setup ucontext_t pointers
    void *stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
    stack = (unsigned char *)stack + stack_size;
    int page_size = getpagesize();
    mprotect(stack, page_size, PROT_NONE);
+   coro->stack = stack;
+   coro->stack_size = stack_size;
    coro->coroutine = ostd_make_fcontext(stack, stack_size, _eina_coro_coro);
 #endif
    coro->finished = EINA_FALSE;
@@ -610,6 +614,7 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
       result = eina_thread_join(coro->coroutine);
 #elif USE_CORO_FCONTEXT
       result = coro->result;
+      munmap(coro->stack - coro->stack_size, coro->stack_size);
 #endif
       INF("coroutine finished with result=%p " CORO_FMT,
           result, CORO_EXP(coro));
