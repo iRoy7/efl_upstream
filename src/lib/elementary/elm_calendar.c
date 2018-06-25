@@ -345,7 +345,7 @@ static void
 _access_calendar_item_register(Evas_Object *obj)
 {
    unsigned int maxdays, i;
-   char day_s[13], pname[14];
+   char day_s[13], pname[18];
    unsigned day = 0;
    Evas_Object *ao;
 
@@ -357,7 +357,7 @@ _access_calendar_item_register(Evas_Object *obj)
         if ((!day) && (i == sd->first_day_it)) day = 1;
         if ((day) && (day <= maxdays))
           {
-             snprintf(pname, sizeof(pname), "cit_%i.access", i);
+             snprintf(pname, sizeof(pname), "elm.cit_%i.access", i);
 
              ao = _elm_access_edje_object_part_object_register
                         (obj, elm_layout_edje_get(obj), pname);
@@ -371,7 +371,7 @@ _access_calendar_item_register(Evas_Object *obj)
           }
         else
           {
-             snprintf(pname, sizeof(pname), "cit_%i.access", i);
+             snprintf(pname, sizeof(pname), "elm.cit_%i.access", i);
              _elm_access_edje_object_part_object_unregister
                      (obj, elm_layout_edje_get(obj), pname);
           }
@@ -465,7 +465,7 @@ _populate(Evas_Object *obj)
 {
    int maxdays, adjusted_wday, prev_month_maxdays, day, mon, yr, i;
    Elm_Calendar_Mark *mark;
-   char part[12], day_s[3];
+   char part[16], day_s[3];
    struct tm first_day;
    Eina_List *l;
    Eina_Bool last_row = EINA_TRUE;
@@ -587,7 +587,7 @@ _populate(Evas_Object *obj)
                snprintf(day_s, sizeof(day_s), "%i", i - sd->first_day_it - maxdays + 1);
           }
 
-        snprintf(part, sizeof(part), "cit_%i.text", i);
+        snprintf(part, sizeof(part), "elm.cit_%i.text", i);
         elm_layout_text_set(obj, part, day_s);
 
         /* Clear previous marks */
@@ -690,7 +690,7 @@ _populate(Evas_Object *obj)
 static void
 _set_headers(Evas_Object *obj)
 {
-   static char part[] = "ch_0.text";
+   static char part[] = "elm.ch_0.text";
    int i;
    struct tm *t;
    time_t temp = 259200; // the first sunday since epoch
@@ -726,7 +726,7 @@ _set_headers(Evas_Object *obj)
 
    for (i = 0; i < ELM_DAY_LAST; i++)
      {
-        part[3] = i + '0';
+        part[7] = i + '0';
         elm_layout_text_set(obj, part, sd->weekdays[(i + sd->first_week_day) % ELM_DAY_LAST]);
      }
 
@@ -1551,8 +1551,8 @@ _access_obj_process(Evas_Object *obj, Eina_Bool is_access)
              if ((!day) && (i == sd->first_day_it)) day = 1;
              if ((day) && (day <= maxdays))
                {
-                  char pname[14];
-                  snprintf(pname, sizeof(pname), "cit_%i.access", i);
+                  char pname[18];
+                  snprintf(pname, sizeof(pname), "elm.cit_%i.access", i);
 
                   _elm_access_edje_object_part_object_unregister
                           (obj, elm_layout_edje_get(obj), pname);
@@ -2040,11 +2040,11 @@ typedef struct {
 EOLIAN static void
 _elm_calendar_item_day_number_set(Eo *obj, Elm_Calendar_Item_Data *pd, int i)
 {
-   char pname[14];
+   char pname[18];
    Evas_Object *po, *o;
 
    pd->v = i;
-   snprintf(pname, sizeof(pname), "cit_%i.access", i);
+   snprintf(pname, sizeof(pname), "elm.cit_%i.access", i);
 
    o = elm_layout_edje_get(efl_parent_get(obj));
    edje_object_freeze(o);
