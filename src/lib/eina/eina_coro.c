@@ -44,6 +44,10 @@
 #include "eina_value.h"
 #include "eina_value_util.h"
 
+#if HAVE_VALGRIND
+#include <valgrind/valgrind.h>
+#endif
+
 typedef void* fcontext_t;
 
 /**
@@ -140,6 +144,9 @@ struct _Eina_Coro {
    unsigned char* stack;
    size_t stack_size;
    void *result;
+#if HAVE_VALGRIND
+   int valgrind_stack_id;
+#endif
 #endif
    Eina_Bool finished;
    Eina_Bool canceled;
@@ -516,13 +523,15 @@ eina_coro_new(Eina_Coro_Cb func, const void *data, size_t stack_size)
         struct rlimit limit;
         getrlimit(RLIMIT_STACK, &limit);
         stack_size = (size_t)limit.rlim_cur;
-        DBG("Setting stack size to %lu\n", stack_size);
+        printf("Setting stack size to %lu\n", stack_size);
      }
    // Setup ucontext_t pointers
    void *stack = mmap(NULL, stack_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+   mprotect(stack, getpagesize(), PROT_NONE);
    stack = (unsigned char *)stack + stack_size;
-   int page_size = getpagesize();
-   mprotect(stack, page_size, PROT_NONE);
+#if HAVE_VALGRIND
+   coro->valgrind_stack_id = VALGRIND_STACK_REGISTER(stack - stack_size, stack);
+#endif
    coro->stack = stack;
    coro->stack_size = stack_size;
    coro->coroutine = ostd_make_fcontext(stack, stack_size, _eina_coro_coro);
@@ -611,6 +620,10 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
       result = eina_thread_join(coro->coroutine);
 #elif USE_CORO_FCONTEXT
       result = coro->result;
+#if HAVE_VALGRIND
+      VALGRIND_STACK_DEREGISTER(coro->valgrind_stack_id);
+#endif
+      mprotect(coro->stack - coro->stack_size, getpagesize(), PROT_READ|PROT_WRITE);
       munmap(coro->stack - coro->stack_size, coro->stack_size);
 #endif
       INF("coroutine finished with result=%p " CORO_FMT,
