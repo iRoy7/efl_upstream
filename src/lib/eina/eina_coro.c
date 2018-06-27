@@ -596,19 +596,16 @@ eina_coro_run(Eina_Coro **p_coro, void **p_result, Eina_Future **p_awaiting)
    _eina_coro_signal(coro, EINA_CORO_TURN_COROUTINE);
    _eina_coro_wait(coro, EINA_CORO_TURN_MAIN);
 #elif USE_CORO_FCONTEXT
-   DBG("Will jump to coro %p", coro->coroutine);
    transfer_t continuation = ostd_jump_fcontext(coro->coroutine, coro);
    // Save the point where we should resume the coroutine.
    coro->coroutine = continuation.ctx;
    coro->turn = EINA_CORO_TURN_MAIN;
-   /* DBG("Switched back to main"); */
 #endif
 
    _eina_coro_hooks_main_enter(coro);
 
    if (EINA_UNLIKELY(coro->finished)) {
       void *result;
-      DBG("coroutine finished, join thread " CORO_FMT, CORO_EXP(coro));
 
 #if USE_CORO_THREAD
       result = eina_thread_join(coro->coroutine);
