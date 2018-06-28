@@ -491,7 +491,9 @@ _elm_popup_elm_layout_sizing_eval(Eo *obj, Elm_Popup_Data *sd)
         else
           evas_object_size_hint_min_set(sd->spacer, minw, minh);
 
-       return;
+        elm_layout_sizing_eval(sd->main_layout);
+
+        return;
      }
 
    if (sd->main_layout)
